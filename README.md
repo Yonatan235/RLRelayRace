@@ -1,53 +1,10 @@
 # RLRelayRace — Contested Exchange Zones
 
-A Gymnasium environment for a strategic relay:
-- **4 lanes (teams), M runners per team (legs 0..M−1)**
-- **4 batons**, each moves in a **fixed lane** (finish depends on lane)
-- At exchange zone *j*, **only 4 fresh runners** are available (one per team, leg *j*)
-- The arriving baton may **pass to one of those runners** (or keep current holder)
-- A selected runner **retires** after their leg
+RLRelayRace is a multi-agent reinforcement learning environment where runners participate in a long relay race with a twist. Instead of always handing the baton to a teammate, runners can strategically choose any other runner in the race to receive the baton, based on prior performance data. They still want their team to win, and that ultimately depends on the final runners. The interesting question is whether the slowest team can win by outsmarting and co-opting from the faster teams. The environment will be custom-built in Python using OpenAI Gym interfaces and will feature fully RL-trained AI agents. 🎮 Project Overview 📏 4 Teams (4 Lanes) 🧍 M Runners per Team (Total: (4M-4) agents) 🧠 Each runner is an RL agent trained to decide whom to pass the baton to (based on race history and team strategy) with a stationary (untrained) capacity to run. This creates a strategic and emergent decision-making problem where cooperation and betrayal can both be optimal.
 
-This lets weaker teams win by **arriving first to zones** and **grabbing better runners**.
-
-## Install
-```bash
+## Install and run
+```
 pip install -e .
-```
-
-## Quick Start
-```python
-from rlrelayrace import RLRelayRaceEnvContest, ContestEnvConfig
-
-env = RLRelayRaceEnvContest(ContestEnvConfig(M=4, track_length=800, exchange_zone_width=0.1))
-obs, info = env.reset()
-
-done = False
-while not done:
-    # joint action: for each lane (0..3), choose among {0:keep, 1..4:team at zone}
-    a = env.action_space.sample()  # replace with policy
-    obs, reward, terminated, truncated, info = env.step(a)
-    done = terminated or truncated
-
-print("Winner lanes:", info.get("winner_lanes"))
-```
-
-## Actions
-For each baton/lane **k**:
-- `0` = keep current runner
-- `1..4` = choose team (0..3) at the current zone, if inside and unused
-
-The joint action is a single integer encoding the 4 per-lane choices.
-
-## Rewards
-- `info['per_lane_reward']`: normalized progress delta per lane
-- scalar `reward`: sum over lanes (you can ignore it)
-
-## Examples
-- **Pass graphs:** who got selected at which leg for each lane
-```bash
-python examples/pass_network_contest.py
-```
-- **Track animation:** color = team currently running each lane’s baton
-```bash
 python examples/track_animation_contest.py
+python examples/pass_network_contest.py
 ```
