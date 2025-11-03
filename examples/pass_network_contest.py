@@ -51,7 +51,7 @@ def main():
     for k in range(env.cfg.lanes):
         G = G_list[k]
         ax = axes[k]
-        ax.set_title(f"Lane {k} Handoffs (Contested)")
+        ax.set_title(f"Lane {k} Handoffs")
 
         node_colors = [team_colors[team_from_node(node)] for node in G.nodes]
 
