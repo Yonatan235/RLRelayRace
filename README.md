@@ -1,7 +1,6 @@
 ## RLRelayRace
 
-**RLRelayRace** is a multi-agent reinforcement learning environment modeling a relay race where baton passing is strategic.  
-Instead of always passing to the next teammate, each runner may pass the baton to **any runner in the race**, using learned decision policies based on race history and performance outcomes. Teams still want their own lane to win, but the passing choices can lead to cooperation, interference, or opportunistic play. 
+**RLRelayRace** is a multi-agent reinforcement learning environment modeling a relay race where baton passing is strategic. Instead of always passing to the next teammate, each runner may pass the baton to **any runner in the race**, using learned decision policies based on race history and performance outcomes. Teams still want their own lane to win, but the passing choices can lead to cooperation, interference, or opportunistic play. 
 
 A Gymnasium environment for a strategic relay:
 - **4 lanes (teams), M runners per team (legs 0..M−1)**
