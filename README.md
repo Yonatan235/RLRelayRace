@@ -1,6 +1,14 @@
-# RLRelayRace — Contested Exchange Zones
+## RLRelayRace
 
-RLRelayRace is a multi-agent reinforcement learning environment where runners participate in a long relay race with a twist. Instead of always handing the baton to a teammate, runners can strategically choose any other runner in the race to receive the baton, based on prior performance data. They still want their team to win, and that ultimately depends on the final runners. The interesting question is whether the slowest team can win by outsmarting and co-opting from the faster teams. The environment will be custom-built in Python using OpenAI Gym interfaces and will feature fully RL-trained AI agents. 🎮 Project Overview 📏 4 Teams (4 Lanes) 🧍 M Runners per Team (Total: (4M-4) agents) 🧠 Each runner is an RL agent trained to decide whom to pass the baton to (based on race history and team strategy) with a stationary (untrained) capacity to run. This creates a strategic and emergent decision-making problem where cooperation and betrayal can both be optimal.
+**RLRelayRace** is a multi-agent reinforcement learning environment modeling a relay race where baton passing is strategic.  
+Instead of always passing to the next teammate, each runner may pass the baton to **any runner in the race**, using learned decision policies based on race history and performance outcomes. Teams still want their own lane to win, but the passing choices can lead to cooperation, interference, or opportunistic play. 
+
+A Gymnasium environment for a strategic relay:
+- **4 lanes (teams), M runners per team (legs 0..M−1)**
+- **4 batons**, each moves in a **fixed lane** (finish depends on lane)
+- At exchange zone *j*, **only 4 fresh runners** are available (one per team, leg *j*)
+- The arriving baton may **pass to one of those runners** (or keep current holder)
+- A selected runner **retires** after their leg
 
 ## Install and run
 ```
