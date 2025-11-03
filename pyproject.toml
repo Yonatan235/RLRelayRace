@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rlrelayrace"
+version = "0.5.0"
+description = "RLRelayRace: contested exchange zones with lane-scored multi-baton relay (Gymnasium)."
+authors = [{name="Your Name"}]
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "gymnasium>=0.29.1",
+  "numpy>=1.24",
+  "matplotlib>=3.7",
+  "networkx>=3.0"
+]
+
+[project.urls]
+Homepage = "https://github.com/yourname/RLRelayRace"
