@@ -4,7 +4,7 @@
 
 A Gymnasium environment for a strategic relay:
 - 4 lanes (teams), M runners per team
-- 4 batons, each moves in a fixed lane (finish depends on lane)
+- 4 batons, each moves in a fixed lane for each leg (finish depends on lane)
 - At exchange zone *j*, only 4 fresh runners are available (one per team, leg *j*)
 - The arriving baton may pass to one of those runners (or keep current holder)
 - A selected runner retires after their leg
