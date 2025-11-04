@@ -43,7 +43,7 @@ def main():
     for K in range(env.cfg.lanes):
         G = G_list[K]
         ax = axes[K]
-        ax.set_title(f"Lane {K} Handoffs (Contested)")
+        ax.set_title(f"Lane {K} Handoffs")
 
         node_colors = []
         for node in G.nodes:
@@ -63,7 +63,7 @@ def main():
     fig.legend(handles=legend_handles, loc="upper center", ncol=4, frameon=False, fontsize=10)
     fig.text(
         0.5, 0.02,
-        "Node label: LaneK LegJ (Runner from LaneR).  Color = R (runner's lane).  Subplot = Lane K.",
+        "Node label: LegJ.  Color = R (runner's lane).  Subplot = Lane K.",
         ha="center", va="center", fontsize=11
     )
     plt.tight_layout(rect=[0, 0.05, 1, 0.92])
