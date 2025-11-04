@@ -8,29 +8,40 @@ from gymnasium import spaces
 @dataclass
 class ContestEnvConfig:
     """
-    Contested handoff relay:
-      - 4 lanes (teams), M runners per team (legs 0..M-1).
-      - 4 batons (one per lane). Batons move along *their lane*; lane finish decides winner.
-      - At exchange zone j, ONLY the 4 fresh runners (one per team at leg j) are available.
-      - The baton arriving to zone j may pass to exactly ONE of the available teams (or keep running).
-      - A selected runner (team t, leg j) retires after that leg; cannot be reused later.
+    Contested Relay Race (final model)
 
-    Action (joint Discrete for all lanes):
-      - For each lane k: a_k ∈ {0..T}, where T=teams (default 4).
-          0    = keep current holder (no handoff even if inside zone)
-          1..T = select team (a_k-1) at current zone (if inside zone and team available)
-      - We encode the vector (a_0..a_{L-1}) in base (T+1).
+    - There are T lanes and T teams (T=4 by default), exactly one baton per lane.
+    - Each lane k has M runners, one per relay leg j=0..M-1. Runners are permanently tied to their lane.
+    - The baton always moves along its current lane; the lane’s finish time determines placement.
+    - At exchange zone j (between legs j and j+1), the baton MUST hand off to the next runner of exactly one lane:
+        candidates = { (Lane r, Leg j) | r in 0..T-1 AND that runner unused }
+      (4 or fewer available if some are already used.)
+    - After a runner (Lane r, Leg j) carries a baton, that runner retires (cannot be reused).
+
+    Action (joint Discrete over lanes):
+      For each lane k:
+        a_k ∈ {1..T}  → choose which lane’s next runner (Lane r = a_k-1) receives the baton if the baton is in the zone.
+        If the baton for lane k is NOT inside its zone this step, a_k is ignored.
+      The vector (a_0 .. a_{T-1}) is encoded as one integer in base T.
 
     Speed model:
-      - Each team t has a base speed per leg j: base_speed[t, j] ~ U(low, high) (fixed).
-      - Current baton speed = base_speed[holder_team[k], leg_index[k]] + N(0, sigma).
+      Each lane r has a fixed base speed per leg j:
+          base_speed[r, j] ~ Uniform(speed_low, speed_high)
+      Baton advance each step:
+          speed = base_speed[current_runner_lane, current_leg] + Normal(0, sigma)
 
-    Rewards:
-      - info['per_lane_reward'] = normalized progress delta per lane.
-      - scalar reward = sum over lanes (use the per-lane vector for credit assignment).
+    Rewards (R2):
+      - Primary:  reward_lane = -finish_time(lane)
+      - Bonus:    + rank_bonus(rank_of_lane), e.g. {1: +1.0, 2: +0.3, 3: -0.3, 4: -1.0}
+      Rewards are given at episode termination (sparse). Per-step reward is 0.
+      The env returns scalar sum(reward_lane); per-lane vector is in info['final_lane_rewards'].
 
-    Deterministic tie-break at zones:
-      - If multiple batons enter a zone the same step, lower lane id resolves first.
+    Must-handoff enforcement:
+      If a baton is inside its current leg’s exchange zone and no valid handoff is selected,
+      the baton does NOT advance (it is “blocked in zone”) until a valid handoff occurs.
+
+    Tie-breaking at zones:
+      If multiple batons are in their zones the same step, lanes are processed in ascending lane id (0..T-1).
     """
     M: int = 4
     lanes: int = 4
@@ -40,15 +51,14 @@ class ContestEnvConfig:
     speed_low: float = 4.0
     speed_high: float = 8.0
     speed_noise_std: float = 0.1
-    pass_cooldown: int = 0           # optional cool-down between decisions (not essential here)
     exchange_zone_width: float = 0.10  # fraction of track length
     seed: Optional[int] = None
 
     def base(self) -> int:
-        return 1 + self.teams         # 0 keep, 1..teams choose team
+        return self.teams  # choices are 1..T in the UI, but we encode 0..T-1 internally, see decode.
 
     def action_size(self) -> int:
-        return self.base() ** self.lanes
+        return (self.base()) ** self.lanes
 
 
 class RLRelayRaceEnvContest(gym.Env):
@@ -57,39 +67,37 @@ class RLRelayRaceEnvContest(gym.Env):
     def __init__(self, config: ContestEnvConfig = ContestEnvConfig()):
         super().__init__()
         self.cfg = config
-        assert self.cfg.teams == self.cfg.lanes == 4, "This build assumes 4 teams == 4 lanes."
+        assert self.cfg.teams == self.cfg.lanes, "Number of lanes must equal number of teams."
 
         self.rng = np.random.default_rng(self.cfg.seed)
-        self.L = self.cfg.lanes
         self.T = self.cfg.teams
+        self.L = self.cfg.lanes
         self.M = self.cfg.M
-        self.track_length = self.cfg.track_length
+        self.Ltrack = self.cfg.track_length
 
-        # Base speeds per (team, leg)
-        self.base_speed = self.rng.uniform(
-            self.cfg.speed_low, self.cfg.speed_high, size=(self.T, self.M)
-        )
+        # Base speed: which lane’s runner is carrying, and which leg determines speed
+        self.base_speed = self.rng.uniform(self.cfg.speed_low, self.cfg.speed_high, size=(self.T, self.M))
 
-        # State:
-        # - holder_team[k] ∈ {0..T-1}
-        # - leg_index[k]   ∈ {0..M-1}
-        # - used[j, t] whether team t's runner at leg j has been used (retired) already
-        # - baton_pos[k]
+        # Observation/Action spaces
         obs_dim = self._obs_dim()
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32)
         self.action_space = spaces.Discrete(self.cfg.action_size())
 
         self.reset(seed=self.cfg.seed)
 
-    # ---------- encoding helpers ----------
+    # ---------- encode/decode joint action ----------
     def _decode_joint(self, a: int) -> np.ndarray:
-        base = self.cfg.base()
-        vec = np.zeros(self.L, dtype=int)
+        """
+        Decode base-T integer to vector of length L with entries in {0..T-1}.
+        We map UI choice {1..T} → internal {0..T-1}. (No 'keep'; must hand off when in zone.)
+        """
+        out = np.zeros(self.L, dtype=int)
         x = int(a)
+        base = self.cfg.base()
         for k in range(self.L):
-            vec[k] = x % base
+            out[k] = x % base
             x //= base
-        return vec
+        return out  # each entry is a chosen lane r in 0..T-1
 
     def _encode_joint(self, vec: List[int]) -> int:
         base = self.cfg.base()
@@ -101,10 +109,8 @@ class RLRelayRaceEnvContest(gym.Env):
 
     # ---------- exchange zone geometry ----------
     def _zone_bounds(self, j: int) -> Tuple[float, float]:
-        # center at (j+1)/M * L, width = w*L
-        L = self.track_length
-        center = (j + 1) / self.M * L
-        half = (self.cfg.exchange_zone_width * L) / 2.0
+        center = (j + 1) / self.M * self.Ltrack
+        half = (self.cfg.exchange_zone_width * self.Ltrack) / 2.0
         return center - half, center + half
 
     def _in_zone(self, pos: float, j: int) -> bool:
@@ -120,13 +126,19 @@ class RLRelayRaceEnvContest(gym.Env):
 
         self.step_count = 0
 
-        # Start: baton k in lane k, held by team k, leg 0
-        self.holder_team = np.arange(self.T, dtype=int)
-        self.leg_index = np.zeros(self.L, dtype=int)
+        # Lane identity == baton identity; start: baton k in Lane k, Leg 0, carried by Lane k’s runner.
+        self.baton_lane = np.arange(self.L, dtype=int)          # fixed identity per subplot
+        self.runner_lane = np.arange(self.L, dtype=int)         # which lane’s runner is currently carrying each baton
+        self.leg_index = np.zeros(self.L, dtype=int)            # current leg per baton
         self.baton_pos = np.zeros(self.L, dtype=float)
 
-        # used[j, t] indicates team t's runner for leg j is already consumed
+        # used[j, r] → whether (Lane r, Leg j) has been consumed
         self.used = np.zeros((self.M, self.T), dtype=bool)
+
+        # finishing bookkeeping
+        self.finish_times = np.full(self.L, np.inf, dtype=float)
+        self.finished = np.zeros(self.L, dtype=bool)
+        self.finish_order = None
 
         self.terminated = False
         self.truncated = False
@@ -137,72 +149,95 @@ class RLRelayRaceEnvContest(gym.Env):
             raise RuntimeError("Call reset before stepping a finished episode.")
 
         self.step_count += 1
-        joint = self._decode_joint(action)
+        chosen_lanes = self._decode_joint(action)  # each entry in 0..T-1
 
         prev_pos = self.baton_pos.copy()
 
-        # 1) Resolve passes for batons that are inside their current leg's zone.
-        # If multiple are in zone this step, resolve in lane-id order (0..L-1).
+        # 1) MUST-HANDOFF phase: if baton is in zone for its current leg, we must select a valid receiver.
+        blocked = np.zeros(self.L, dtype=bool)
         for k in range(self.L):
             j = int(self.leg_index[k])
             if j >= self.M - 1:
-                continue  # last leg: no passing
+                continue  # last leg: no handoff
             if not self._in_zone(self.baton_pos[k], j):
                 continue
 
-            a_k = joint[k]  # 0 keep, 1..T choose team
-            if a_k == 0:
-                pass  # keep current holder
+            r = int(chosen_lanes[k])  # chosen receiver runner’s lane (0..T-1)
+            # must be unused for leg j
+            if not self.used[j, r]:
+                # consume the chosen runner for leg j
+                self.used[j, r] = True
+                # set new runner identity and advance to next leg
+                self.runner_lane[k] = r
+                self.leg_index[k] = j + 1
             else:
-                chosen_team = a_k - 1
-                # candidate must be unused at this leg
-                if not self.used[j, chosen_team]:
-                    # consume the chosen runner at leg j
-                    self.used[j, chosen_team] = True
-                    # set new holder team immediately for next segment
-                    self.holder_team[k] = chosen_team
-                    # advance baton to next leg index (handoff completed within zone)
-                    self.leg_index[k] = j + 1
-                # else: chosen team unavailable; do nothing (keep current holder)
+                # invalid choice: baton is blocked in zone until a valid handoff is made
+                blocked[k] = True
 
-        # 2) Run phase: all batons advance by holder's leg speed + noise
+        # 2) RUN phase: advance all batons that are not blocked
         for k in range(self.L):
+            if blocked[k]:
+                continue  # cannot move until valid handoff occurs
             j = int(self.leg_index[k])
-            t = int(self.holder_team[k])
-            mu = self.base_speed[t, j]
+            r_lane = int(self.runner_lane[k])
+            mu = self.base_speed[r_lane, j]
             spd = max(0.0, mu + self.rng.normal(0.0, self.cfg.speed_noise_std))
             self.baton_pos[k] += spd
 
-        # 3) Termination
-        winners = np.where(self.baton_pos >= self.track_length)[0]
-        if len(winners) > 0:
+        # 3) record new finishers & termination
+        for k in range(self.L):
+            if (not self.finished[k]) and self.baton_pos[k] >= self.Ltrack:
+                self.finished[k] = True
+                # first time crossing; record finish "time" as step_count (or use physical time if you model dt)
+                self.finish_times[k] = float(self.step_count)
+
+        if np.all(self.finished):
             self.terminated = True
-        if self.step_count >= self.cfg.max_steps:
+            # rank: smaller finish_times are better
+            self.finish_order = np.argsort(self.finish_times).tolist()
+
+        if self.step_count >= self.cfg.max_steps and not self.terminated:
             self.truncated = True
 
-        # 4) Rewards
-        delta = (self.baton_pos - prev_pos) / self.track_length
-        reward = float(delta.sum())
-        obs = self._get_obs()
-        info = self._info()
-        info["per_lane_reward"] = delta
+        # 4) Rewards (R2): only at termination
         if self.terminated:
-            info["winner_lanes"] = winners.tolist()
+            # rank bonus table
+            rank_bonus = {1: 1.0, 2: 0.3, 3: -0.3, 4: -1.0}
+            # compute lane ranks (1..T)
+            order = np.argsort(self.finish_times)
+            ranks = np.empty(self.L, dtype=int)
+            for rank_idx, lane_id in enumerate(order):
+                ranks[lane_id] = rank_idx + 1
 
-        return obs, reward, self.terminated, self.truncated, info
+            per_lane = -self.finish_times.copy()
+            for k in range(self.L):
+                per_lane[k] += rank_bonus.get(int(ranks[k]), 0.0)
+
+            reward = float(per_lane.sum())
+            info = self._info()
+            info["finish_times"] = self.finish_times.copy()
+            info["finish_order"] = self.finish_order
+            info["final_lane_rewards"] = per_lane
+            obs = self._get_obs()
+            return obs, reward, True, self.truncated, info
+        else:
+            # per-step reward = 0 (sparse)
+            obs = self._get_obs()
+            info = self._info()
+            return obs, 0.0, False, self.truncated, info
 
     # ---------- observations ----------
     def _obs_dim(self) -> int:
-        # baton_pos_norm[L] + time[1] + holder_team_onehot[L*T] + leg_index_norm[L] + zone_flags[L]
-        return self.L + 1 + self.L*self.T + self.L + self.L
+        # pos_norm[L] + time_norm[1] + onehot current runner lane [L*T] + leg_norm[L] + zone_flags[L] + finished_flags[L]
+        return self.L + 1 + self.L*self.T + self.L + self.L + self.L
 
     def _get_obs(self) -> np.ndarray:
-        pos_norm = (self.baton_pos / self.track_length).astype(np.float32)
+        pos_norm = (self.baton_pos / self.Ltrack).astype(np.float32)
         time_norm = np.array([self.step_count / max(1, self.cfg.max_steps)], dtype=np.float32)
 
         holder_oh = np.zeros((self.L, self.T), dtype=np.float32)
         for k in range(self.L):
-            holder_oh[k, int(self.holder_team[k])] = 1.0
+            holder_oh[k, int(self.runner_lane[k])] = 1.0
 
         leg_norm = (self.leg_index / max(1, self.M - 1)).astype(np.float32)
 
@@ -211,8 +246,10 @@ class RLRelayRaceEnvContest(gym.Env):
             j = int(self.leg_index[k])
             zone_flags[k] = 1.0 if self._in_zone(self.baton_pos[k], j) else 0.0
 
+        finished_flags = self.finished.astype(np.float32)
+
         return np.concatenate([
-            pos_norm, time_norm, holder_oh.flatten(), leg_norm, zone_flags
+            pos_norm, time_norm, holder_oh.flatten(), leg_norm, zone_flags, finished_flags
         ]).astype(np.float32)
 
     # ---------- info ----------
@@ -220,8 +257,9 @@ class RLRelayRaceEnvContest(gym.Env):
         return dict(
             step=self.step_count,
             baton_pos=self.baton_pos.copy(),
-            holder_team=self.holder_team.copy(),
+            runner_lane=self.runner_lane.copy(),
             leg_index=self.leg_index.copy(),
+            finished=self.finished.copy(),
             terminated=self.terminated,
             truncated=self.truncated,
         )
@@ -229,9 +267,9 @@ class RLRelayRaceEnvContest(gym.Env):
     def render(self) -> str:
         bars = []
         for k in range(self.L):
-            bar = int(30 * (self.baton_pos[k] / self.track_length))
+            bar = int(30 * (self.baton_pos[k] / self.Ltrack))
             bar = max(0, min(30, bar))
-            bars.append(f"L{k}[" + "#" * bar + "-" * (30 - bar) + f"] team={self.holder_team[k]} leg={self.leg_index[k]}")
+            bars.append(f"Lane{k}[" + "#" * bar + "-" * (30 - bar) + f"] runnerLane={self.runner_lane[k]} leg={self.leg_index[k]}")
         return f"t={self.step_count} | " + " | ".join(bars)
 
     def close(self):
